@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
-import sys, os
+import sys
 
 with open(sys.argv[1], 'rb') as ifile:
-    open(sys.argv[2], 'w').write('Everything ok.\n')
-
+    with open(sys.argv[2], 'w') as ofile:
+        ofile.write('Everything ok.\n')

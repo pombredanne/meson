@@ -1,3 +1,2 @@
-usr/bin/prog
-usr/lib/libshar.so
-usr/lib/libstat.a
+usr/bin/prog?exe
+usr/libtest/libstat.a

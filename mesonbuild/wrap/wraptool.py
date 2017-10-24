@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 # Copyright 2015-2016 The Meson development team
 
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -76,7 +74,7 @@ def get_latest_version(name):
     jd = get_result(API_ROOT + 'query/get_latest/' + name)
     branch = jd['branch']
     revision = jd['revision']
-    return (branch, revision)
+    return branch, revision
 
 def install(name):
     if not os.path.isdir('subprojects'):
@@ -92,7 +90,8 @@ def install(name):
     (branch, revision) = get_latest_version(name)
     u = open_wrapdburl(API_ROOT + 'projects/%s/%s/%s/get_wrap' % (name, branch, revision))
     data = u.read()
-    open(wrapfile, 'wb').write(data)
+    with open(wrapfile, 'wb') as f:
+        f.write(data)
     print('Installed', name, 'branch', branch, 'revision', revision)
 
 def get_current_version(wrapfile):
@@ -103,7 +102,7 @@ def get_current_version(wrapfile):
     arr = patch_url.split('/')
     branch = arr[-3]
     revision = int(arr[-2])
-    return (branch, revision, cp['directory'], cp['source_filename'], cp['patch_filename'])
+    return branch, revision, cp['directory'], cp['source_filename'], cp['patch_filename']
 
 def update(name):
     if not os.path.isdir('subprojects'):
@@ -129,13 +128,14 @@ def update(name):
         os.unlink(os.path.join('subprojects/packagecache', patch_file))
     except FileNotFoundError:
         pass
-    open(wrapfile, 'wb').write(data)
+    with open(wrapfile, 'wb') as f:
+        f.write(data)
     print('Updated', name, 'to branch', new_branch, 'revision', new_revision)
 
 def info(name):
     jd = get_result(API_ROOT + 'projects/' + name)
     versions = jd['versions']
-    if len(versions) == 0:
+    if not versions:
         print('No available versions of', name)
         sys.exit(0)
     print('Available versions of %s:' % name)
@@ -162,7 +162,7 @@ def status():
             print('', name, 'not up to date. Have %s %d, but %s %d is available.' % (current_branch, current_revision, latest_branch, latest_revision))
 
 def run(args):
-    if len(args) == 0 or args[0] == '-h' or args[0] == '--help':
+    if not args or args[0] == '-h' or args[0] == '--help':
         print_help()
         return 0
     command = args[0]

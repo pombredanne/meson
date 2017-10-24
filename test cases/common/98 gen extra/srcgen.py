@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import sys
-import os
 import argparse
 
 parser = argparse.ArgumentParser()
@@ -19,8 +18,10 @@ c_templ = '''int %s() {
 
 options = parser.parse_args(sys.argv[1:])
 
-funcname = open(options.input).readline().strip()
+with open(options.input) as f:
+    funcname = f.readline().strip()
 if options.upper:
     funcname = funcname.upper()
 
-open(options.output, 'w').write(c_templ % funcname)
+with open(options.output, 'w') as f:
+    f.write(c_templ % funcname)

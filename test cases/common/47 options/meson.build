@@ -12,6 +12,11 @@ if get_option('combo_opt') != 'combo'
   error('Incorrect value to combo option.')
 endif
 
+# If the default changes, update test cases/unit/13 reconfigure
+if get_option('b_lto') != false
+  error('Incorrect value in base option.')
+endif
+
 if get_option('includedir') != 'include'
   error('Incorrect value in builtin option.')
 endif

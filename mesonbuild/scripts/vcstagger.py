@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 # Copyright 2015-2016 The Meson development team
 
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,14 +21,22 @@ def config_vcs_tag(infile, outfile, fallback, source_dir, replace_string, regex_
     except Exception:
         new_string = fallback
 
-    new_data = open(infile).read().replace(replace_string, new_string)
-    if (not os.path.exists(outfile)) or (open(outfile).read() != new_data):
-        open(outfile, 'w').write(new_data)
+    with open(infile) as f:
+        new_data = f.read().replace(replace_string, new_string)
+    if os.path.exists(outfile):
+        with open(outfile) as f:
+            needs_update = (f.read() != new_data)
+    else:
+        needs_update = True
+    if needs_update:
+        with open(outfile, 'w') as f:
+            f.write(new_data)
 
 def run(args):
     infile, outfile, fallback, source_dir, replace_string, regex_selector = args[0:6]
     command = args[6:]
     config_vcs_tag(infile, outfile, fallback, source_dir, replace_string, regex_selector, command)
+    return 0
 
 if __name__ == '__main__':
     sys.exit(run(sys.argv[1:]))

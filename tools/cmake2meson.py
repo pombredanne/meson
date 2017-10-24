@@ -24,9 +24,9 @@ class Token:
         self.lineno = 0
         self.colno = 0
 
-class Statement():
+class Statement:
     def __init__(self, name, args):
-        self.name = name
+        self.name = name.lower()
         self.args = args
 
 class Lexer:
@@ -36,9 +36,9 @@ class Lexer:
             ('ignore', re.compile(r'[ \t]')),
             ('string', re.compile(r'"([^\\]|(\\.))*?"', re.M)),
             ('varexp', re.compile(r'\${[-_0-9a-z/A-Z.]+}')),
-            ('id', re.compile('''[,-><${}=+_0-9a-z/A-Z@.*]+''')),
+            ('id', re.compile('''[,-><${}=+_0-9a-z/A-Z|@.*]+''')),
             ('eol', re.compile(r'\n')),
-            ('comment', re.compile(r'\#.*')),
+            ('comment', re.compile(r'#.*')),
             ('lparen', re.compile(r'\(')),
             ('rparen', re.compile(r'\)')),
         ]
@@ -46,14 +46,14 @@ class Lexer:
     def lex(self, code):
         lineno = 1
         line_start = 0
-        loc = 0;
+        loc = 0
         col = 0
-        while(loc < len(code)):
+        while loc < len(code):
             matched = False
             for (tid, reg) in self.token_specification:
                 mo = reg.match(code, loc)
                 if mo:
-                    col = mo.start()-line_start
+                    col = mo.start() - line_start
                     matched = True
                     loc = mo.end()
                     match_text = mo.group()
@@ -70,11 +70,10 @@ class Lexer:
                     elif tid == 'id':
                         yield(Token('id', match_text))
                     elif tid == 'eol':
-                        #yield('eol')
+                        # yield('eol')
                         lineno += 1
                         col = 1
                         line_start = mo.end()
-                        pass
                     elif tid == 'varexp':
                         yield(Token('varexp', match_text[2:-1]))
                     else:
@@ -83,7 +82,7 @@ class Lexer:
             if not matched:
                 raise RuntimeError('Lexer got confused line %d column %d' % (lineno, col))
 
-class Parser():
+class Parser:
     def __init__(self, code):
         self.stream = Lexer().lex(code)
         self.getsym()
@@ -121,8 +120,12 @@ class Parser():
             args.append(self.arguments())
             self.expect('rparen')
         arg = self.current
-        if self.accept('string') or self.accept('varexp') or\
-        self.accept('id'):
+        if self.accept('comment'):
+            rest = self.arguments()
+            args += rest
+        elif self.accept('string') \
+                or self.accept('varexp') \
+                or self.accept('id'):
             args.append(arg)
             rest = self.arguments()
             args += rest
@@ -133,9 +136,10 @@ class Parser():
             yield(self.statement())
 
 class Converter:
-    ignored_funcs = {'cmake_minimum_required' : True,
-                     'enable_testing' : True,
-                     'include' : True}
+    ignored_funcs = {'cmake_minimum_required': True,
+                     'enable_testing': True,
+                     'include': True}
+
     def __init__(self, cmake_root):
         self.cmake_root = cmake_root
         self.indent_unit = '  '
@@ -154,7 +158,7 @@ class Converter:
             if i.tid == 'id':
                 res.append("'%s'" % i.value)
             elif i.tid == 'varexp':
-                res.append('%s' % i.value)
+                res.append('%s' % i.value.lower())
             elif i.tid == 'string':
                 res.append("'%s'" % i.value)
             else:
@@ -240,7 +244,7 @@ class Converter:
         else:
             line = '''# %s(%s)''' % (t.name, self.convert_args(t.args))
         self.indent_level += preincrement
-        indent = self.indent_level*self.indent_unit
+        indent = self.indent_level * self.indent_unit
         outfile.write(indent)
         outfile.write(line)
         if not(line.endswith('\n')):
@@ -252,39 +256,47 @@ class Converter:
             subdir = self.cmake_root
         cfile = os.path.join(subdir, 'CMakeLists.txt')
         try:
-            cmakecode = open(cfile).read()
+            with open(cfile) as f:
+                cmakecode = f.read()
         except FileNotFoundError:
             print('\nWarning: No CMakeLists.txt in', subdir, '\n')
             return
         p = Parser(cmakecode)
-        outfile = open(os.path.join(subdir, 'meson.build'), 'w')
-        for t in p.parse():
-            if t.name == 'add_subdirectory':
-                #print('\nRecursing to subdir', os.path.join(self.cmake_root, t.args[0].value), '\n')
-                self.convert(os.path.join(subdir, t.args[0].value))
-                #print('\nReturning to', self.cmake_root, '\n')
-            self.write_entry(outfile, t)
+        with open(os.path.join(subdir, 'meson.build'), 'w') as outfile:
+            for t in p.parse():
+                if t.name == 'add_subdirectory':
+                    # print('\nRecursing to subdir',
+                    #       os.path.join(self.cmake_root, t.args[0].value),
+                    #       '\n')
+                    self.convert(os.path.join(subdir, t.args[0].value))
+                    # print('\nReturning to', self.cmake_root, '\n')
+                self.write_entry(outfile, t)
         if subdir == self.cmake_root and len(self.options) > 0:
             self.write_options()
 
     def write_options(self):
-        optfile = open(os.path.join(self.cmake_root, 'meson_options.txt'), 'w')
-        for o in self.options:
-            (optname, description, default) = o
-            if default is None:
-                defaultstr = ''
-            else:
-                if default == 'OFF':
-                    typestr = ' type : boolean,'
-                    default = 'false'
-                elif default == 'ON':
-                    default = 'true'
-                    typestr = ' type : boolean,'
+        filename = os.path.join(self.cmake_root, 'meson_options.txt')
+        with open(filename, 'w') as optfile:
+            for o in self.options:
+                (optname, description, default) = o
+                if default is None:
+                    typestr = ''
+                    defaultstr = ''
                 else:
-                    typestr = ' type : string,'
-                defaultstr = ' value : %s,' % default
-            line = "option(%s,%s%s description : '%s')\n" % (optname, typestr, defaultstr, description)
-            optfile.write(line)
+                    if default == 'OFF':
+                        typestr = ' type : \'boolean\','
+                        default = 'false'
+                    elif default == 'ON':
+                        default = 'true'
+                        typestr = ' type : \'boolean\','
+                    else:
+                        typestr = ' type : \'string\','
+                    defaultstr = ' value : %s,' % default
+                line = "option(%r,%s%s description : '%s')\n" % (optname,
+                                                                 typestr,
+                                                                 defaultstr,
+                                                                 description)
+                optfile.write(line)
 
 if __name__ == '__main__':
     if len(sys.argv) != 2:

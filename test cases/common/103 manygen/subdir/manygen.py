@@ -1,4 +1,6 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
+
+from __future__ import print_function
 
 # Generates a static library, object file, source
 # file and a header file.
@@ -6,14 +8,25 @@
 import sys, os
 import shutil, subprocess
 
-funcname = open(sys.argv[1]).readline().strip()
+with open(sys.argv[1]) as f:
+    funcname = f.readline().strip()
 outdir = sys.argv[2]
+buildtype_args = sys.argv[3]
 
 if not os.path.isdir(outdir):
     print('Outdir does not exist.')
     sys.exit(1)
 
-if shutil.which('cl'):
+# Emulate the environment.detect_c_compiler() logic
+compiler = os.environ.get('CC', None)
+if not compiler:
+    compiler = shutil.which('cl') or \
+        shutil.which('gcc') or \
+        shutil.which('clang') or \
+        shutil.which('cc')
+
+compbase = os.path.basename(compiler)
+if 'cl' in compbase and 'clang' not in compbase:
     libsuffix = '.lib'
     is_vs = True
     compiler = 'cl'
@@ -22,11 +35,6 @@ else:
     libsuffix = '.a'
     is_vs = False
     linker = 'ar'
-    compiler = shutil.which('gcc')
-    if compiler is None:
-        compiler = shutil.which('clang')
-    if compiler is None:
-        compiler = shutil.which('cc')
     if compiler is None:
         print('No known compilers found.')
         sys.exit(1)
@@ -41,29 +49,33 @@ outc = os.path.join(outdir, funcname + '.c')
 tmpc = 'diibadaaba.c'
 tmpo = 'diibadaaba' + objsuffix
 
-open(outc, 'w').write('''#include"%s.h"
+with open(outc, 'w') as f:
+    f.write('''#include"%s.h"
 int %s_in_src() {
   return 0;
 }
 ''' % (funcname, funcname))
 
-open(outh, 'w').write('''#pragma once
+with open(outh, 'w') as f:
+    f.write('''#pragma once
 int %s_in_lib();
 int %s_in_obj();
 int %s_in_src();
 ''' % (funcname, funcname, funcname))
 
-open(tmpc, 'w').write('''int %s_in_obj() {
+with open(tmpc, 'w') as f:
+    f.write('''int %s_in_obj() {
   return 0;
 }
 ''' % funcname)
 
 if is_vs:
-    subprocess.check_call([compiler, '/nologo', '/c', '/Fo' + outo, tmpc])
+    subprocess.check_call([compiler, '/nologo', '/c', buildtype_args, '/Fo' + outo, tmpc])
 else:
     subprocess.check_call([compiler, '-c', '-o', outo, tmpc])
 
-open(tmpc, 'w').write('''int %s_in_lib() {
+with open(tmpc, 'w') as f:
+    f.write('''int %s_in_lib() {
   return 0;
 }
 ''' % funcname)
@@ -77,4 +89,3 @@ else:
 
 os.unlink(tmpo)
 os.unlink(tmpc)
-

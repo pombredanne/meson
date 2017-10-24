@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 # Copyright 2013-2016 The Meson development team
 
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,9 +17,8 @@ import sys
 import argparse
 import pickle
 import platform
-import subprocess
 
-import mesonbuild
+from ..mesonlib import Popen_safe
 
 options = None
 
@@ -32,8 +29,12 @@ def is_windows():
     platname = platform.system().lower()
     return platname == 'windows' or 'mingw' in platname
 
+def is_cygwin():
+    platname = platform.system().lower()
+    return 'cygwin' in platname
+
 def run_with_mono(fname):
-    if fname.endswith('.exe') and not is_windows():
+    if fname.endswith('.exe') and not (is_windows() or is_cygwin()):
         return True
     return False
 
@@ -45,7 +46,7 @@ def run_exe(exe):
     else:
         if exe.is_cross:
             if exe.exe_runner is None:
-                raise Exception('BUG: Trying to run cross-compiled exes with no wrapper')
+                raise AssertionError('BUG: Trying to run cross-compiled exes with no wrapper')
             else:
                 cmd = [exe.exe_runner] + exe.fname
         else:
@@ -53,12 +54,15 @@ def run_exe(exe):
     child_env = os.environ.copy()
     child_env.update(exe.env)
     if len(exe.extra_paths) > 0:
-        child_env['PATH'] = ';'.join(exe.extra_paths + ['']) + child_env['PATH']
-    p = subprocess.Popen(cmd + exe.cmd_args,
-                         stdout=subprocess.PIPE,
-                         stderr=subprocess.PIPE,
-                         env=child_env,
-                         cwd=exe.workdir)
+        child_env['PATH'] = (os.pathsep.join(exe.extra_paths + ['']) +
+                             child_env['PATH'])
+    p, stdout, stderr = Popen_safe(cmd + exe.cmd_args, env=child_env, cwd=exe.workdir)
+    if exe.capture and p.returncode == 0:
+        with open(exe.capture, 'w') as output:
+            output.write(stdout)
+    if stderr:
+        sys.stderr.write(stderr)
+    return p.returncode
 
 def run(args):
     global options
@@ -67,8 +71,9 @@ def run(args):
         print('Test runner for Meson. Do not run on your own, mmm\'kay?')
         print(sys.argv[0] + ' [data file]')
     exe_data_file = options.args[0]
-    exe = pickle.load(open(exe_data_file, 'rb'))
-    run_exe(exe)
+    with open(exe_data_file, 'rb') as f:
+        exe = pickle.load(f)
+    return run_exe(exe)
 
 if __name__ == '__main__':
     sys.exit(run(sys.argv[1:]))

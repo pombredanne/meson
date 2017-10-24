@@ -14,6 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# ghwt - GitHub WrapTool
+#
+# An emergency wraptool(1) replacement downloader that downloads
+# directly from GitHub in case wrapdb.mesonbuild.com is down.
+
 import urllib.request, json, sys, os, shutil, subprocess
 import configparser, hashlib
 
@@ -52,8 +57,8 @@ def unpack(sproj, branch, outdir):
         return 1
     spdir = os.path.split(outdir)[0]
     ofilename = os.path.join(spdir, config['wrap-file']['source_filename'])
-    ofile = open(ofilename, 'wb')
-    ofile.write(us)
+    with open(ofilename, 'wb') as ofile:
+        ofile.write(us)
     if 'lead_directory_missing' in config['wrap-file']:
         os.mkdir(outdir)
         shutil.unpack_archive(ofilename, outdir)
@@ -85,7 +90,7 @@ def install(sproj):
     return unpack(sproj, branch, sproj_dir)
 
 def run(args):
-    if len(args) == 0 or args[0] == '-h' or args[0] == '--help':
+    if not args or args[0] == '-h' or args[0] == '--help':
         print(sys.argv[0], 'list/install', 'package_name')
         return 1
     command = args[0]

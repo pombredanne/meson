@@ -1,4 +1,4 @@
-# Copyright 2012-2016 The Meson development team
+# Copyright 2012-2017 The Meson development team
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,10 +13,14 @@
 # limitations under the License.
 
 import pickle, os, uuid
-from .mesonlib import MesonException, default_libdir, default_libexecdir, default_prefix
+from pathlib import PurePath
+from collections import OrderedDict
+from .mesonlib import MesonException, commonpath
+from .mesonlib import default_libdir, default_libexecdir, default_prefix
+import ast
 
-version = '0.33.0.dev1'
-backendlist = ['ninja', 'vs2010', 'vs2015', 'xcode']
+version = '0.44.0.dev1'
+backendlist = ['ninja', 'vs', 'vs2010', 'vs2015', 'vs2017', 'xcode']
 
 class UserOption:
     def __init__(self, name, description, choices):
@@ -28,6 +32,12 @@ class UserOption:
     def parse_string(self, valuestring):
         return valuestring
 
+    # Check that the input is a valid value and return the
+    # "cleaned" or "native" version. For example the Boolean
+    # option could take the string "true" and return True.
+    def validate_value(self, value):
+        raise RuntimeError('Derived option class did not override validate_value.')
+
 class UserStringOption(UserOption):
     def __init__(self, name, description, value, choices=None):
         super().__init__(name, description, choices)
@@ -36,19 +46,18 @@ class UserStringOption(UserOption):
     def validate(self, value):
         if not isinstance(value, str):
             raise MesonException('Value "%s" for string option "%s" is not a string.' % (str(value), self.name))
-        if self.name == 'prefix' and not os.path.isabs(value):
-            raise MesonException('Prefix option value \'{0}\' must be an absolute path.'.format(value))
-        if self.name in ('libdir', 'bindir', 'includedir', 'datadir', 'mandir', 'localedir') \
-            and os.path.isabs(value):
-            raise MesonException('Option %s must not be an absolute path.' % self.name)
 
     def set_value(self, newvalue):
         self.validate(newvalue)
         self.value = newvalue
 
+    def validate_value(self, value):
+        self.validate(value)
+        return value
+
 class UserBooleanOption(UserOption):
     def __init__(self, name, description, value):
-        super().__init__(name, description, [ True, False ])
+        super().__init__(name, description, [True, False])
         self.set_value(value)
 
     def tobool(self, thing):
@@ -73,6 +82,39 @@ class UserBooleanOption(UserOption):
     def __bool__(self):
         return self.value
 
+    def validate_value(self, value):
+        return self.tobool(value)
+
+class UserIntegerOption(UserOption):
+    def __init__(self, name, description, min_value, max_value, value):
+        super().__init__(name, description, [True, False])
+        self.min_value = min_value
+        self.max_value = max_value
+        self.set_value(value)
+
+    def set_value(self, newvalue):
+        if isinstance(newvalue, str):
+            newvalue = self.toint(newvalue)
+        if not isinstance(newvalue, int):
+            raise MesonException('New value for integer option is not an integer.')
+        if self.min_value is not None and newvalue < self.min_value:
+            raise MesonException('New value %d is less than minimum value %d.' % (newvalue, self.min_value))
+        if self.max_value is not None and newvalue > self.max_value:
+            raise MesonException('New value %d is more than maximum value %d.' % (newvalue, self.max_value))
+        self.value = newvalue
+
+    def toint(self, valuestring):
+        try:
+            return int(valuestring)
+        except:
+            raise MesonException('Value string "%s" is not convertable to an integer.' % valuestring)
+
+    def parse_string(self, valuestring):
+        return self.toint(valuestring)
+
+    def validate_value(self, value):
+        return self.toint(value)
+
 class UserComboOption(UserOption):
     def __init__(self, name, description, choices, value):
         super().__init__(name, description, choices)
@@ -89,28 +131,42 @@ class UserComboOption(UserOption):
             raise MesonException('Value "%s" for combo option "%s" is not one of the choices. Possible choices are: %s.' % (newvalue, self.name, optionsstring))
         self.value = newvalue
 
+    def validate_value(self, value):
+        if value not in self.choices:
+            raise MesonException('Value %s not one of accepted values.' % value)
+        return value
+
 class UserStringArrayOption(UserOption):
     def __init__(self, name, description, value, **kwargs):
         super().__init__(name, description, kwargs.get('choices', []))
         self.set_value(value)
 
-    def set_value(self, newvalue):
-        if isinstance(newvalue, str):
-            if not newvalue.startswith('['):
-                raise MesonException('Valuestring does not define an array: ' + newvalue)
-            newvalue = eval(newvalue, {}, {}) # Yes, it is unsafe.
+    def validate(self, value):
+        if isinstance(value, str):
+            if not value.startswith('['):
+                raise MesonException('Valuestring does not define an array: ' + value)
+            newvalue = ast.literal_eval(value)
+        else:
+            newvalue = value
         if not isinstance(newvalue, list):
-            raise MesonException('String array value is not an array.')
+            raise MesonException('"{0}" should be a string array, but it is not'.format(str(newvalue)))
         for i in newvalue:
             if not isinstance(i, str):
-                raise MesonException('String array element not a string.')
-        self.value = newvalue
+                raise MesonException('String array element "{0}" is not a string.'.format(str(newvalue)))
+        return newvalue
+
+    def set_value(self, newvalue):
+        self.value = self.validate(newvalue)
+
+    def validate_value(self, value):
+        self.validate(value)
+        return value
 
 # This class contains all data that must persist over multiple
 # invocations of Meson. It is roughly the same thing as
 # cmakecache.
 
-class CoreData():
+class CoreData:
 
     def __init__(self, options):
         self.guid = str(uuid.uuid4()).upper()
@@ -119,26 +175,86 @@ class CoreData():
         self.target_guids = {}
         self.version = version
         self.init_builtins(options)
+        self.init_backend_options(self.builtins['backend'].value)
         self.user_options = {}
         self.compiler_options = {}
         self.base_options = {}
-        self.external_args = {} # These are set from "the outside" with e.g. mesonconf
-        self.external_link_args = {}
+        # These external_*args, are set via env vars CFLAGS, LDFLAGS, etc
+        # but only when not cross-compiling.
+        self.external_preprocess_args = {} # CPPFLAGS only
+        self.external_args = {} # CPPFLAGS + CFLAGS
+        self.external_link_args = {} # CFLAGS + LDFLAGS (with MSVC: only LDFLAGS)
         if options.cross_file is not None:
             self.cross_file = os.path.join(os.getcwd(), options.cross_file)
         else:
             self.cross_file = None
-
-        self.compilers = {}
-        self.cross_compilers = {}
-        self.deps = {}
+        self.wrap_mode = options.wrap_mode
+        self.compilers = OrderedDict()
+        self.cross_compilers = OrderedDict()
+        self.deps = OrderedDict()
         self.modules = {}
+        # Only to print a warning if it changes between Meson invocations.
+        self.pkgconf_envvar = os.environ.get('PKG_CONFIG_PATH', '')
+
+    def sanitize_prefix(self, prefix):
+        if not os.path.isabs(prefix):
+            raise MesonException('prefix value {!r} must be an absolute path'
+                                 ''.format(prefix))
+        if prefix.endswith('/') or prefix.endswith('\\'):
+            # On Windows we need to preserve the trailing slash if the
+            # string is of type 'C:\' because 'C:' is not an absolute path.
+            if len(prefix) == 3 and prefix[1] == ':':
+                pass
+            else:
+                prefix = prefix[:-1]
+        return prefix
+
+    def sanitize_dir_option_value(self, prefix, option, value):
+        '''
+        If the option is an installation directory option and the value is an
+        absolute path, check that it resides within prefix and return the value
+        as a path relative to the prefix.
+
+        This way everyone can do f.ex, get_option('libdir') and be sure to get
+        the library directory relative to prefix.
+        '''
+        if option.endswith('dir') and os.path.isabs(value) and \
+           option not in builtin_dir_noprefix_options:
+            # Value must be a subdir of the prefix
+            # commonpath will always return a path in the native format, so we
+            # must use pathlib.PurePath to do the same conversion before
+            # comparing.
+            if commonpath([value, prefix]) != str(PurePath(prefix)):
+                m = 'The value of the {!r} option is {!r} which must be a ' \
+                    'subdir of the prefix {!r}.\nNote that if you pass a ' \
+                    'relative path, it is assumed to be a subdir of prefix.'
+                raise MesonException(m.format(option, value, prefix))
+            # Convert path to be relative to prefix
+            skip = len(prefix) + 1
+            value = value[skip:]
+        return value
 
     def init_builtins(self, options):
         self.builtins = {}
+        # Sanitize prefix
+        options.prefix = self.sanitize_prefix(options.prefix)
+        # Initialize other builtin options
         for key in get_builtin_options():
-            args = [key] + builtin_options[key][1:-1] + [ getattr(options, key, get_builtin_option_default(key)) ]
+            if hasattr(options, key):
+                value = getattr(options, key)
+                value = self.sanitize_dir_option_value(options.prefix, key, value)
+                setattr(options, key, value)
+            else:
+                value = get_builtin_option_default(key)
+            args = [key] + builtin_options[key][1:-1] + [value]
             self.builtins[key] = builtin_options[key][0](*args)
+
+    def init_backend_options(self, backend_name):
+        self.backend_options = {}
+        if backend_name == 'ninja':
+            self.backend_options['backend_max_links'] = UserIntegerOption('backend_max_links',
+                                                                          'Maximum number of linker processes to run or 0 for no limit',
+                                                                          0, None, 0)
 
     def get_builtin_option(self, optname):
         if optname in self.builtins:
@@ -146,24 +262,41 @@ class CoreData():
         raise RuntimeError('Tried to get unknown builtin option %s.' % optname)
 
     def set_builtin_option(self, optname, value):
-        if optname in self.builtins:
-            self.builtins[optname].set_value(value)
+        if optname == 'prefix':
+            value = self.sanitize_prefix(value)
+        elif optname in self.builtins:
+            prefix = self.builtins['prefix'].value
+            value = self.sanitize_dir_option_value(prefix, optname, value)
         else:
             raise RuntimeError('Tried to set unknown builtin option %s.' % optname)
+        self.builtins[optname].set_value(value)
+
+    def validate_option_value(self, option_name, override_value):
+        for opts in (self.builtins, self.base_options, self.compiler_options, self.user_options):
+            if option_name in opts:
+                opt = opts[option_name]
+                return opt.validate_value(override_value)
+        raise MesonException('Tried to validate unknown option %s.' % option_name)
 
 def load(filename):
-    obj = pickle.load(open(filename, 'rb'))
+    load_fail_msg = 'Coredata file {!r} is corrupted. Try with a fresh build tree.'.format(filename)
+    try:
+        with open(filename, 'rb') as f:
+            obj = pickle.load(f)
+    except pickle.UnpicklingError:
+        raise MesonException(load_fail_msg)
     if not isinstance(obj, CoreData):
-        raise RuntimeError('Core data file is corrupted.')
+        raise MesonException(load_fail_msg)
     if obj.version != version:
-        raise RuntimeError('Build tree has been generated with Meson version %s, which is incompatible with current version %s.'%
-                           (obj.version, version))
+        raise MesonException('Build directory has been generated with Meson version %s, which is incompatible with current version %s.\nPlease delete this build directory AND create a new one.' %
+                             (obj.version, version))
     return obj
 
 def save(obj, filename):
     if obj.version != version:
-        raise RuntimeError('Fatal version mismatch corruption.')
-    pickle.dump(obj, open(filename, 'wb'))
+        raise MesonException('Fatal version mismatch corruption.')
+    with open(filename, 'wb') as f:
+        pickle.dump(obj, f)
 
 def get_builtin_options():
     return list(builtin_options.keys())
@@ -176,7 +309,7 @@ def get_builtin_option_choices(optname):
         if builtin_options[optname][0] == UserStringOption:
             return None
         elif builtin_options[optname][0] == UserBooleanOption:
-            return [ True, False ]
+            return [True, False]
         else:
             return builtin_options[optname][2]
     else:
@@ -198,29 +331,48 @@ def get_builtin_option_default(optname):
         raise RuntimeError('Tried to get the default value for an unknown builtin option \'%s\'.' % optname)
 
 builtin_options = {
-        'buildtype'         : [ UserComboOption, 'Build type to use.', [ 'plain', 'debug', 'debugoptimized', 'release' ], 'debug' ],
-        'strip'             : [ UserBooleanOption, 'Strip targets on install.', False ],
-        'unity'             : [ UserBooleanOption, 'Unity build.', False ],
-        'prefix'            : [ UserStringOption, 'Installation prefix.', default_prefix() ],
-        'libdir'            : [ UserStringOption, 'Library directory.', default_libdir() ],
-        'libexecdir'        : [ UserStringOption, 'Library executable directory.', default_libexecdir() ],
-        'bindir'            : [ UserStringOption, 'Executable directory.', 'bin' ],
-        'includedir'        : [ UserStringOption, 'Header file directory.', 'include' ],
-        'datadir'           : [ UserStringOption, 'Data file directory.', 'share' ],
-        'mandir'            : [ UserStringOption, 'Manual page directory.', 'share/man' ],
-        'localedir'         : [ UserStringOption, 'Locale data directory.', 'share/locale' ],
-        'werror'            : [ UserBooleanOption, 'Treat warnings as errors.', False ],
-        'warning_level'     : [ UserComboOption, 'Compiler warning level to use.', [ '1', '2', '3' ], '1'],
-        'layout'            : [ UserComboOption, 'Build directory layout.', ['mirror', 'flat' ], 'mirror' ],
-        'default_library'   : [ UserComboOption, 'Default library type.', [ 'shared', 'static' ], 'shared' ],
-        'backend'           : [ UserComboOption, 'Backend to use.', backendlist, 'ninja' ],
-        'stdsplit'          : [ UserBooleanOption, 'Split stdout and stderr in test logs.', True ],
-        'errorlogs'         : [ UserBooleanOption, "Whether to print the logs from failing tests.", False ],
-        }
+    'buildtype':  [UserComboOption, 'Build type to use.', ['plain', 'debug', 'debugoptimized', 'release', 'minsize'], 'debug'],
+    'strip':      [UserBooleanOption, 'Strip targets on install.', False],
+    'unity':      [UserComboOption, 'Unity build.', ['on', 'off', 'subprojects'], 'off'],
+    'prefix':     [UserStringOption, 'Installation prefix.', default_prefix()],
+    'libdir':     [UserStringOption, 'Library directory.', default_libdir()],
+    'libexecdir': [UserStringOption, 'Library executable directory.', default_libexecdir()],
+    'bindir':     [UserStringOption, 'Executable directory.', 'bin'],
+    'sbindir':    [UserStringOption, 'System executable directory.', 'sbin'],
+    'includedir': [UserStringOption, 'Header file directory.', 'include'],
+    'datadir':    [UserStringOption, 'Data file directory.', 'share'],
+    'mandir':     [UserStringOption, 'Manual page directory.', 'share/man'],
+    'infodir':    [UserStringOption, 'Info page directory.', 'share/info'],
+    'localedir':  [UserStringOption, 'Locale data directory.', 'share/locale'],
+    # sysconfdir, localstatedir and sharedstatedir are a bit special. These defaults to ${prefix}/etc,
+    # ${prefix}/var and ${prefix}/com but nobody uses that. Instead they always set it
+    # manually to /etc, /var and /var/lib. This default values is thus pointless and not really used
+    # but we set it to this for consistency with other systems.
+    #
+    # Projects installing to sysconfdir, localstatedir or sharedstatedir probably want
+    # to set the following in project():
+    #
+    # default_options : ['sysconfdir=/etc', 'localstatedir=/var', 'sharedstatedir=/var/lib']
+    'sysconfdir':      [UserStringOption, 'Sysconf data directory.', 'etc'],
+    'localstatedir':   [UserStringOption, 'Localstate data directory.', 'var'],
+    'sharedstatedir':  [UserStringOption, 'Architecture-independent data directory.', 'com'],
+    'werror':          [UserBooleanOption, 'Treat warnings as errors.', False],
+    'warning_level':   [UserComboOption, 'Compiler warning level to use.', ['1', '2', '3'], '1'],
+    'layout':          [UserComboOption, 'Build directory layout.', ['mirror', 'flat'], 'mirror'],
+    'default_library': [UserComboOption, 'Default library type.', ['shared', 'static'], 'shared'],
+    'backend':         [UserComboOption, 'Backend to use.', backendlist, 'ninja'],
+    'stdsplit':        [UserBooleanOption, 'Split stdout and stderr in test logs.', True],
+    'errorlogs':       [UserBooleanOption, "Whether to print the logs from failing tests.", True],
+}
+
+# Installation directories that can reside in a path outside of the prefix
+builtin_dir_noprefix_options = {'sysconfdir', 'localstatedir', 'sharedstatedir'}
 
 forbidden_target_names = {'clean': None,
+                          'clean-ctlist': None,
                           'clean-gcno': None,
                           'clean-gcda': None,
+                          'coverage': None,
                           'coverage-text': None,
                           'coverage-xml': None,
                           'coverage-html': None,
@@ -228,11 +380,12 @@ forbidden_target_names = {'clean': None,
                           'PHONY': None,
                           'all': None,
                           'test': None,
-                          'test:': None,
-                          'test-valgrind': None,
-                          'test-valgrind:': None,
                           'benchmark': None,
                           'install': None,
+                          'uninstall': None,
                           'build.ninja': None,
                           'scan-build': None,
-                         }
+                          'reconfigure': None,
+                          'dist': None,
+                          'distcheck': None,
+                          }

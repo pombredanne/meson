@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 # Copyright 2014 The Meson development team
 
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,13 +15,14 @@
 """This program is a wrapper to run external commands. It determines
 what to run, sets up the environment and executes the command."""
 
-import sys, os, subprocess, shutil
+import sys, os, subprocess, shutil, shlex
 
-def run_command(source_dir, build_dir, subdir, command, arguments):
-    env = {'MESON_SOURCE_ROOT' : source_dir,
-           'MESON_BUILD_ROOT' : build_dir,
-           'MESON_SUBDIR' : subdir
-          }
+def run_command(source_dir, build_dir, subdir, meson_command, command, arguments):
+    env = {'MESON_SOURCE_ROOT': source_dir,
+           'MESON_BUILD_ROOT': build_dir,
+           'MESON_SUBDIR': subdir,
+           'MESONINTROSPECT': ' '.join([shlex.quote(x) for x in meson_command + ['introspect']]),
+           }
     cwd = os.path.join(source_dir, subdir)
     child_env = os.environ.copy()
     child_env.update(env)
@@ -37,7 +36,7 @@ def run_command(source_dir, build_dir, subdir, command, arguments):
     fullpath = os.path.join(source_dir, subdir, command)
     command_array = [fullpath] + arguments
     try:
-        return subprocess.Popen(command_array,env=child_env, cwd=cwd)
+        return subprocess.Popen(command_array, env=child_env, cwd=cwd)
     except FileNotFoundError:
         print('Could not execute command "%s".' % command)
         sys.exit(1)
@@ -49,9 +48,16 @@ def run(args):
     src_dir = args[0]
     build_dir = args[1]
     subdir = args[2]
-    command = args[3]
-    arguments = args[4:]
-    pc = run_command(src_dir, build_dir, subdir, command, arguments)
+    meson_command = args[3]
+    if 'python' in meson_command: # Hack.
+        meson_command = [meson_command, args[4]]
+        command = args[5]
+        arguments = args[6:]
+    else:
+        meson_command = [meson_command]
+        command = args[4]
+        arguments = args[5:]
+    pc = run_command(src_dir, build_dir, subdir, meson_command, command, arguments)
     pc.wait()
     return pc.returncode
 

@@ -19,20 +19,15 @@ static GParamSpec *gParamSpecs [LAST_PROP];
 
 /**
  * meson_sample_new:
- * @msg: The message to set.
  *
  * Allocates a new #MesonSample.
  *
  * Returns: (transfer full): a #MesonSample.
  */
 MesonSample *
-meson_sample_new (const gchar *msg)
+meson_sample_new (void)
 {
-  g_return_val_if_fail (msg != NULL, NULL);
-
-  return g_object_new (MESON_TYPE_SAMPLE,
-                       "message", msg,
-                       NULL);
+  return g_object_new (MESON_TYPE_SAMPLE, NULL);
 }
 
 static void
@@ -116,9 +111,11 @@ meson_sample_init (MesonSample *self)
  * Returns: Nothing.
  */
 void
-meson_sample_print_message (MesonSample *self)
+meson_sample_print_message (MesonSample *self, MesonDep1 *dep1, MesonDep2 *dep2)
 {
+  MesonDep2 *samedep;
   g_return_if_fail (MESON_IS_SAMPLE (self));
 
-  g_print ("Message: %s\n", self->msg);
+  samedep = meson_dep1_just_return_it (dep1, dep2);
+  g_print ("Message: %s\n", meson_dep2_return_message (samedep));
 }

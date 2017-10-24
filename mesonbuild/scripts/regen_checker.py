@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 # Copyright 2015-2016 The Meson development team
 
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,29 +27,35 @@ def need_regen(regeninfo, regen_timestamp):
     # We must make sure to recreate it, even if we do not regenerate the solution.
     # Otherwise, Visual Studio will always consider the REGEN project out of date.
     print("Everything is up-to-date, regeneration of build files is not needed.")
-    from mesonbuild.backend.vs2010backend import Vs2010Backend
+    from ..backend.vs2010backend import Vs2010Backend
     Vs2010Backend.touch_regen_timestamp(regeninfo.build_dir)
     return False
 
-def regen(regeninfo):
-    scriptdir = os.path.split(__file__)[0]
-    mesonscript = os.path.join(scriptdir, '../../', 'meson')
-    cmd = [sys.executable,
-           mesonscript,
-           '--internal',
+def regen(regeninfo, mesonscript, backend):
+    if sys.executable.lower().endswith('meson.exe'):
+        cmd_exe = [sys.executable]
+    else:
+        cmd_exe = [sys.executable, mesonscript]
+    cmd = cmd_exe + ['--internal',
            'regenerate',
            regeninfo.build_dir,
            regeninfo.source_dir,
-           '--backend=vs2010']
+           '--backend=' + backend]
     subprocess.check_call(cmd)
 
 def run(args):
     private_dir = args[0]
     dumpfile = os.path.join(private_dir, 'regeninfo.dump')
-    regeninfo = pickle.load(open(dumpfile, 'rb'))
+    coredata = os.path.join(private_dir, 'coredata.dat')
+    with open(dumpfile, 'rb') as f:
+        regeninfo = pickle.load(f)
+    with open(coredata, 'rb') as f:
+        coredata = pickle.load(f)
+    mesonscript = coredata.meson_script_launcher
+    backend = coredata.get_builtin_option('backend')
     regen_timestamp = os.stat(dumpfile).st_mtime
     if need_regen(regeninfo, regen_timestamp):
-        regen(regeninfo)
+        regen(regeninfo, mesonscript, backend)
     sys.exit(0)
 
 if __name__ == '__main__':

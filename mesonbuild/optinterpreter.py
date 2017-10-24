@@ -12,22 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os, re
+import functools
+
 from . import mparser
 from . import coredata
 from . import mesonlib
-import os, re
+
 
 forbidden_option_names = coredata.get_builtin_options()
-forbidden_prefixes = {'c_': True,
-                      'cpp_': True,
-                      'rust_': True,
-                      'fortran_': True,
-                      'objc_': True,
-                      'objcpp_': True,
-                      'vala_': True,
-                      'csharp_': True,
-                      'swift_': True,
-                      'b_': True,
+forbidden_prefixes = {'c_',
+                      'cpp_',
+                      'd_',
+                      'rust_',
+                      'fortran_',
+                      'objc_',
+                      'objcpp_',
+                      'vala_',
+                      'csharp_',
+                      'swift_',
+                      'b_',
+                      'backend_',
                       }
 
 def is_invalid_name(name):
@@ -41,15 +46,33 @@ def is_invalid_name(name):
 class OptionException(mesonlib.MesonException):
     pass
 
+
+def permitted_kwargs(permitted):
+    """Function that validates kwargs for options."""
+    def _wraps(func):
+        @functools.wraps(func)
+        def _inner(name, description, kwargs):
+            bad = [a for a in kwargs.keys() if a not in permitted]
+            if bad:
+                raise OptionException('Invalid kwargs for option "{}": "{}"'.format(
+                    name, ' '.join(bad)))
+            return func(name, description, kwargs)
+        return _inner
+    return _wraps
+
+
 optname_regex = re.compile('[^a-zA-Z0-9_-]')
 
+@permitted_kwargs({'value'})
 def StringParser(name, description, kwargs):
     return coredata.UserStringOption(name, description,
                                      kwargs.get('value', ''), kwargs.get('choices', []))
 
+@permitted_kwargs({'value'})
 def BooleanParser(name, description, kwargs):
     return coredata.UserBooleanOption(name, description, kwargs.get('value', True))
 
+@permitted_kwargs({'value', 'choices'})
 def ComboParser(name, description, kwargs):
     if 'choices' not in kwargs:
         raise OptionException('Combo option missing "choices" keyword.')
@@ -61,23 +84,35 @@ def ComboParser(name, description, kwargs):
             raise OptionException('Combo choice elements must be strings.')
     return coredata.UserComboOption(name, description, choices, kwargs.get('value', choices[0]))
 
-option_types = {'string' : StringParser,
-                'boolean' : BooleanParser,
-                'combo' : ComboParser,
-               }
+option_types = {'string': StringParser,
+                'boolean': BooleanParser,
+                'combo': ComboParser,
+                }
 
 class OptionInterpreter:
     def __init__(self, subproject, command_line_options):
         self.options = {}
         self.subproject = subproject
+        self.sbprefix = subproject + ':'
         self.cmd_line_options = {}
         for o in command_line_options:
-            (key, value) = o.split('=', 1)
+            if self.subproject != '': # Strip the beginning.
+                # Ignore options that aren't for this subproject
+                if not o.startswith(self.sbprefix):
+                    continue
+            try:
+                (key, value) = o.split('=', 1)
+            except ValueError:
+                raise OptionException('Option {!r} must have a value separated by equals sign.'.format(o))
+            # Ignore subproject options if not fetching subproject options
+            if self.subproject == '' and ':' in key:
+                continue
             self.cmd_line_options[key] = value
 
     def process(self, option_file):
         try:
-            ast = mparser.Parser(open(option_file, 'r', encoding='utf8').read()).parse()
+            with open(option_file, 'r', encoding='utf8') as f:
+                ast = mparser.Parser(f.read(), '').parse()
         except mesonlib.MesonException as me:
             me.file = option_file
             raise me
@@ -97,14 +132,11 @@ class OptionInterpreter:
     def reduce_single(self, arg):
         if isinstance(arg, str):
             return arg
-        elif isinstance(arg, mparser.StringNode):
-            return arg.value
-        elif isinstance(arg, mparser.BooleanNode):
+        elif isinstance(arg, (mparser.StringNode, mparser.BooleanNode,
+                              mparser.NumberNode)):
             return arg.value
         elif isinstance(arg, mparser.ArrayNode):
             return [self.reduce_single(curarg) for curarg in arg.args.arguments]
-        elif isinstance(arg, mparser.NumberNode):
-            return arg.value
         else:
             raise OptionException('Arguments may only be string, int, bool, or array of those.')
 
@@ -119,7 +151,7 @@ class OptionInterpreter:
                 raise OptionException('Keyword argument name is not a string.')
             a = args.kwargs[key]
             reduced_kw[key] = self.reduce_single(a)
-        return (reduced_pos, reduced_kw)
+        return reduced_pos, reduced_kw
 
     def evaluate_statement(self, node):
         if not isinstance(node, mparser.FunctionNode):
@@ -130,8 +162,8 @@ class OptionInterpreter:
         (posargs, kwargs) = self.reduce_arguments(node.args)
         if 'type' not in kwargs:
             raise OptionException('Option call missing mandatory "type" keyword argument')
-        opt_type = kwargs['type']
-        if not opt_type in option_types:
+        opt_type = kwargs.pop('type')
+        if opt_type not in option_types:
             raise OptionException('Unknown type %s.' % opt_type)
         if len(posargs) != 1:
             raise OptionException('Option() must have one (and only one) positional argument')
@@ -144,7 +176,7 @@ class OptionInterpreter:
             raise OptionException('Option name %s is reserved.' % opt_name)
         if self.subproject != '':
             opt_name = self.subproject + ':' + opt_name
-        opt = option_types[opt_type](opt_name, kwargs.get('description', ''), kwargs)
+        opt = option_types[opt_type](opt_name, kwargs.pop('description', ''), kwargs)
         if opt.description == '':
             opt.description = opt_name
         if opt_name in self.cmd_line_options:
